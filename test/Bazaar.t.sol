@@ -67,7 +67,9 @@ contract BazaarTest is Test {
         b[0] = imd.balanceOf(player);
         b[1] = imd.balanceOf(burnSink);
         b[2] = imd.balanceOf(shrine);
-        for (uint256 i; i < 4; ++i) b[3 + i] = imd.balanceOf(team[i]);
+        for (uint256 i; i < 4; ++i) {
+            b[3 + i] = imd.balanceOf(team[i]);
+        }
     }
 
     function _checkSplit(uint256 amount) internal {
