@@ -75,7 +75,9 @@ contract CapsTest is Test {
 
     function test_publicStopsAtTwenty() public {
         _phase(GodsOfIMDInhabitants.Phase.Public);
-        for (uint256 i; i < 20; ++i) _forge(player);
+        for (uint256 i; i < 20; ++i) {
+            _forge(player);
+        }
         assertEq(nft.mintedBy(player), 20);
         assertEq(nft.balanceOf(player), 20);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.WalletLimitReached.selector, player, 20));
@@ -86,7 +88,9 @@ contract CapsTest is Test {
         _list();
         _phase(GodsOfIMDInhabitants.Phase.Allowlist);
         uint256 before = imd.balanceOf(seer);
-        for (uint256 i; i < 25; ++i) _forgeSeer(seer, 25, _leaf(fan, 1));
+        for (uint256 i; i < 25; ++i) {
+            _forgeSeer(seer, 25, _leaf(fan, 1));
+        }
         assertEq(nft.balanceOf(seer), 25);
         assertEq(before - imd.balanceOf(seer), 25 * 4 ether);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.AllowlistCapReached.selector, seer, 25));
@@ -100,8 +104,12 @@ contract CapsTest is Test {
     function test_seerCapCountsEveryForge() public {
         _list();
         _phase(GodsOfIMDInhabitants.Phase.Public);
-        for (uint256 i; i < 20; ++i) _forge(seer);
-        for (uint256 i; i < 5; ++i) _forgeSeer(seer, 25, _leaf(fan, 1));
+        for (uint256 i; i < 20; ++i) {
+            _forge(seer);
+        }
+        for (uint256 i; i < 5; ++i) {
+            _forgeSeer(seer, 25, _leaf(fan, 1));
+        }
         assertEq(nft.mintedBy(seer), 25);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.WalletLimitReached.selector, seer, 25));
         _forgeSeer(seer, 25, _leaf(fan, 1));
@@ -114,7 +122,9 @@ contract CapsTest is Test {
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.AllowlistCapReached.selector, fan, 1));
         _forgeSeer(fan, 1, _leaf(seer, 25));
         _phase(GodsOfIMDInhabitants.Phase.Public);
-        for (uint256 i; i < 19; ++i) _forge(fan);
+        for (uint256 i; i < 19; ++i) {
+            _forge(fan);
+        }
         assertEq(nft.balanceOf(fan), 20);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.WalletLimitReached.selector, fan, 20));
         _forge(fan);

@@ -68,7 +68,11 @@ contract ShiftTest is Test {
         id = nft.forgeWithToken(SHIFT, keccak256(abi.encode("shift", who, i)), ref);
     }
 
-    function _token(address t) internal view returns (uint256 price, uint256 cap, uint256 forged, uint16 burnBps, address payee) {
+    function _token(address t)
+        internal
+        view
+        returns (uint256 price, uint256 cap, uint256 forged, uint16 burnBps, address payee)
+    {
         (price, cap, forged, burnBps, payee) = nft.forgeTokens(t);
     }
 
@@ -100,7 +104,7 @@ contract ShiftTest is Test {
         assertEq(imd.balanceOf(player), 1_000 ether, "no IMD taken");
         assertEq(imd.balanceOf(shrine), 0, "nothing for the shrine: the Oracle takes IMD");
         assertEq(nft.mintedBy(player), 1);
-        (, , uint256 forged, , ) = _token(SHIFT);
+        (,, uint256 forged,,) = _token(SHIFT);
         assertEq(forged, 1);
     }
 
@@ -201,7 +205,9 @@ contract ShiftTest is Test {
             vm.prank(player);
             nft.forge(keccak256(abi.encode("imd", i)), address(0));
         }
-        for (uint256 i; i < 10; ++i) _shiftForge(player, i, address(0));
+        for (uint256 i; i < 10; ++i) {
+            _shiftForge(player, i, address(0));
+        }
         vm.prank(player);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.WalletLimitReached.selector, player, 20));
         nft.forgeWithToken(SHIFT, keccak256("21st"), address(0));
@@ -221,18 +227,24 @@ contract ShiftTest is Test {
         address[4] memory partners = [address(0xA1), address(0xA2), address(0xA3), address(0xA4)];
         GodsOfIMDInhabitants.Payee[] memory ps = new GodsOfIMDInhabitants.Payee[](5);
         ps[0] = GodsOfIMDInhabitants.Payee(owner, 1400);
-        for (uint256 i; i < 4; ++i) ps[i + 1] = GodsOfIMDInhabitants.Payee(partners[i], 1400);
+        for (uint256 i; i < 4; ++i) {
+            ps[i + 1] = GodsOfIMDInhabitants.Payee(partners[i], 1400);
+        }
         vm.prank(owner);
         nft.setPayees(ps);
         // a forge in IMD: 5 IMD, 1 burned, 0.5 to the shrine, 0.7 to each of the five
         vm.prank(player);
         nft.forge(keccak256("imd"), address(0));
         assertEq(imd.balanceOf(owner), 0.7 ether);
-        for (uint256 i; i < 4; ++i) assertEq(imd.balanceOf(partners[i]), 0.7 ether);
+        for (uint256 i; i < 4; ++i) {
+            assertEq(imd.balanceOf(partners[i]), 0.7 ether);
+        }
         // a forge in $SHIFT: 60,000 burned, 140,000 to its payee (the owner), nothing to the partners
         _shiftForge(player, 1, address(0));
         assertEq(shift.balanceOf(owner), 140_000 ether);
-        for (uint256 i; i < 4; ++i) assertEq(shift.balanceOf(partners[i]), 0);
+        for (uint256 i; i < 4; ++i) {
+            assertEq(shift.balanceOf(partners[i]), 0);
+        }
     }
 
     function test_withoutTheTokenOnThisChainItReverts() public {
