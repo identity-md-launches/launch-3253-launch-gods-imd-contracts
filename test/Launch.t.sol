@@ -68,7 +68,9 @@ contract LaunchTest is Test {
         assertEq(uint8(nft.phase()), uint8(GodsOfIMDInhabitants.Phase.Closed));
         assertEq(bytes(nft.baseURI()).length, 0);
         uint256 deck;
-        for (uint256 i; i < 4; ++i) deck += nft.markCap(i);
+        for (uint256 i; i < 4; ++i) {
+            deck += nft.markCap(i);
+        }
         assertEq(deck, 1000);
     }
 
