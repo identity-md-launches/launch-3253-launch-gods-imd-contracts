@@ -45,7 +45,9 @@ contract MarksTest is Test {
     function test_genesisRulesAreBuiltIn() public view {
         assertEq(nft.maxSupply(), 1000);
         assertEq(nft.GENESIS_SUPPLY(), 1000);
-        for (uint256 m; m < 4; ++m) assertEq(nft.markCap(m), caps[m]);
+        for (uint256 m; m < 4; ++m) {
+            assertEq(nft.markCap(m), caps[m]);
+        }
         assertEq(nft.mintPrice(), 5 ether);
         assertEq(nft.allowlistPrice(), 4 ether);
         GodsOfIMDInhabitants.Payee[] memory p = nft.payees();
@@ -107,7 +109,9 @@ contract MarksTest is Test {
         }
         assertEq(total, 1000);
         assertEq(nft.totalForged(), 1000);
-        for (uint256 m; m < 4; ++m) assertEq(nft.markRevealed(m), caps[m]);
+        for (uint256 m; m < 4; ++m) {
+            assertEq(nft.markRevealed(m), caps[m]);
+        }
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.ReserveExhausted.selector, 100));
         nft.forgeReserved(keccak256("one more"));
@@ -118,7 +122,6 @@ contract MarksTest is Test {
     function _expected(uint256 id) internal view returns (uint8) {
         uint256 b = nft.revealBlock(id);
         bytes32 h = blockhash(b);
-        if (h == bytes32(0)) h = blockhash(block.number - 1);
         uint256 rand = uint256(keccak256(abi.encode(h, nft.soulHashOf(id), id)));
         uint256[4] memory w;
         uint256 sum;
@@ -127,7 +130,7 @@ contract MarksTest is Test {
             sum += w[k];
         }
         uint256 r = rand % sum;
-        for (uint256 k = 4; k > 0; ) {
+        for (uint256 k = 4; k > 0;) {
             --k;
             if (r < w[k]) return uint8(k + 1);
             r -= w[k];
@@ -147,7 +150,7 @@ contract MarksTest is Test {
     }
 
     function test_noEarlyWaves() public {
-        (bool ok, ) = address(nft).staticcall(abi.encodeWithSignature("earlyBoost(uint256)", uint256(1)));
+        (bool ok,) = address(nft).staticcall(abi.encodeWithSignature("earlyBoost(uint256)", uint256(1)));
         assertFalse(ok, "there is no earlyBoost any more");
     }
 }

@@ -109,7 +109,7 @@ contract OracleShrine is Ownable, EIP712 {
     uint256 public constant MAX_QUESTIONS = 8;
     /// @notice Pin kind of reward-list questions. Reserved for `askRewards`; `ask` rejects it.
     uint8 public constant KIND_REWARDS = 4;
-    /// @notice Intake action used by `askRewards` (one question, answered through `onOracleResult`).
+    /// @notice Default Intake action for rewards (one question, answered through `onOracleResult`).
     bytes32 public constant REWARDS_ACTION = "oracle.request@oracle-1";
     /// @notice After this long without a judgment, the owner may cancel a proposed week.
     uint256 public constant REWARD_JUDGMENT_TIMEOUT = 14 days;
@@ -129,7 +129,12 @@ contract OracleShrine is Ownable, EIP712 {
     /// @notice Game server: asks questions, proposes weekly rewards and anchors daily world checkpoints.
     address public director;
     uint256 public pricePerQuestion = 0.5 ether;
-    uint16 public minQuorum = 3;
+    uint16 public minQuorum = 20;
+    /// @notice Minimum signed panel size and agreement, for callbacks and permissionless relays alike.
+    uint16 public minPanelSize = 30;
+    uint16 public minAgreed = 20;
+    /// @notice Owner may migrate rewards to a new Intake action without redeploying the vault.
+    bytes32 public rewardsAction = REWARDS_ACTION;
     /// @notice A week's reward total may be at most this share of the free balance (2000 = 20%).
     uint16 public maxRewardBps = 2000;
     /// @notice IMD set aside for proposed and active reward weeks. `ask` and `withdraw` cannot spend it.
@@ -180,6 +185,8 @@ contract OracleShrine is Ownable, EIP712 {
     event DirectorUpdated(address indexed director);
     event PriceUpdated(uint256 pricePerQuestion);
     event MinQuorumUpdated(uint16 minQuorum);
+    event PanelMinimumsUpdated(uint16 minPanelSize, uint16 minAgreed);
+    event RewardsActionUpdated(bytes32 action);
     event MaxRewardBpsUpdated(uint16 maxRewardBps);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
 
@@ -201,6 +208,9 @@ contract OracleShrine is Ownable, EIP712 {
     error InvalidSignature();
     error AnchorExists(uint64 day);
     error InvalidMinQuorum();
+    error InvalidPanelMinimums();
+    error PanelTooWeak(uint16 panelSize, uint16 agreed);
+    error ZeroAction();
     error InvalidMaxRewardBps(uint16 maxRewardBps);
     error InsufficientFreeBalance(uint256 needed, uint256 available);
     error RewardWeekExists(uint64 week, RewardStatus status);
@@ -271,7 +281,7 @@ contract OracleShrine is Ownable, EIP712 {
 
     /// @notice Propose a week's rewards and ask the IMD Oracle panel to approve them.
     /// Reserves `total` IMD (at most `maxRewardBps` of the free balance), pins `questionHash` with kind
-    /// `KIND_REWARDS` and buys one single-question `REWARDS_ACTION` request from the intake; its answer arrives
+    /// `KIND_REWARDS` and buys one single-question `rewardsAction` request from the intake; its answer arrives
     /// through `onOracleResult` (or `record`). `body` is the oracle question: it should ask whether the published
     /// reward list behind `root` follows the published rules, with `bool` as the answer type.
     /// A week can be proposed again only after it was rejected or cancelled (`unpin` of its question cancels it).
@@ -304,10 +314,11 @@ contract OracleShrine is Ownable, EIP712 {
         });
 
         uint256 paid;
-        (requestId, paid) = _buy(REWARDS_ACTION, body, 1); // the question is paid from what is left free
+        bytes32 action = rewardsAction;
+        (requestId, paid) = _buy(action, body, 1); // the question is paid from what is left free
         bytes32[] memory hashes = new bytes32[](1);
         hashes[0] = questionHash;
-        emit Asked(requestId, REWARDS_ACTION, KIND_REWARDS, hashes, paid);
+        emit Asked(requestId, action, KIND_REWARDS, hashes, paid);
         emit RewardsProposed(week, questionHash, requestId, root, total);
     }
 
@@ -344,7 +355,7 @@ contract OracleShrine is Ownable, EIP712 {
 
     /// @notice Single-question answer (selector 0x510379c7). Called by the intake with a 200k gas limit.
     /// @dev The answer bytes are stored (~22k gas per 32-byte word), so only short answers fit the limit:
-    /// bool/address/bytes32/uint256 easily, address[]/bytes32[] only with a few elements. If the callback runs out
+    /// bool/address/bytes32/uint256 easily. Use `record` for lists longer than two elements. If the callback runs out
     /// of gas the intake swallows the revert, the request stays pending, and the attestation can still be
     /// relayed by anyone through `record`.
     function onOracleResult(bytes32 requestId, Attestation calldata a, bytes calldata signature)
@@ -370,7 +381,10 @@ contract OracleShrine is Ownable, EIP712 {
         uint16 agreed,
         uint16 answered,
         bytes calldata /* signature */
-    ) external onlyIntakeCallback(requestId) {
+    )
+        external
+        onlyIntakeCallback(requestId)
+    {
         emit AskFailed(requestId, status, reason, agreed, answered);
     }
 
@@ -473,6 +487,21 @@ contract OracleShrine is Ownable, EIP712 {
         if (minQuorum_ == 0) revert InvalidMinQuorum();
         minQuorum = minQuorum_;
         emit MinQuorumUpdated(minQuorum_);
+    }
+
+    /// @notice Minimum panel and agreement accepted for every pinned question, independent of the body's panel.
+    /// Set these and `minQuorum` to the required security level before the director asks questions.
+    function setPanelMinimums(uint16 minPanelSize_, uint16 minAgreed_) external onlyOwner {
+        if (minPanelSize_ < 2 || minAgreed_ == 0 || minAgreed_ > minPanelSize_) revert InvalidPanelMinimums();
+        minPanelSize = minPanelSize_;
+        minAgreed = minAgreed_;
+        emit PanelMinimumsUpdated(minPanelSize_, minAgreed_);
+    }
+
+    function setRewardsAction(bytes32 action) external onlyOwner {
+        if (action == bytes32(0)) revert ZeroAction();
+        rewardsAction = action;
+        emit RewardsActionUpdated(action);
     }
 
     /// @param maxRewardBps_ cap on a week's reward total as bps of the free balance (0 disables rewards).
@@ -606,6 +635,9 @@ contract OracleShrine is Ownable, EIP712 {
         if (a.agreed < a.quorum) revert QuorumNotReached(a.agreed, a.quorum);
         uint16 minQ = minQuorum;
         if (a.quorum < minQ) revert QuorumTooLow(a.quorum, minQ);
+        if (a.panelSize < minPanelSize || a.agreed < minAgreed || a.agreed > a.panelSize) {
+            revert PanelTooWeak(a.panelSize, a.agreed);
+        }
         if (block.timestamp > a.expiresAt) revert AttestationExpired(a.expiresAt);
         if (!SignatureChecker.isValidSignatureNowCalldata(oracleSigner, _hashTypedDataV4(_hash(a)), signature)) {
             revert InvalidSignature();

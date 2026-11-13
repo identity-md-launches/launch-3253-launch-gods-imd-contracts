@@ -85,7 +85,11 @@ contract ReserveTest is Test {
     function test_reservedSoulsAreUniqueAndReveal() public {
         uint256 id = _reserve(1);
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.SoulAlreadyForged.selector, keccak256(abi.encode("reserved", uint256(1))), id));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GodsOfIMDInhabitants.SoulAlreadyForged.selector, keccak256(abi.encode("reserved", uint256(1))), id
+            )
+        );
         nft.forgeReserved(keccak256(abi.encode("reserved", uint256(1))));
         vm.roll(block.number + 2);
         nft.reveal(id);
@@ -96,7 +100,9 @@ contract ReserveTest is Test {
     }
 
     function test_reserveStopsAtAHundred() public {
-        for (uint256 i = 1; i <= 100; ++i) assertEq(_reserve(i), 900 + i);
+        for (uint256 i = 1; i <= 100; ++i) {
+            assertEq(_reserve(i), 900 + i);
+        }
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.ReserveExhausted.selector, 100));
         nft.forgeReserved(keccak256("101"));
@@ -105,16 +111,20 @@ contract ReserveTest is Test {
 
     function test_manyInOneTransaction() public {
         bytes32[] memory hs = new bytes32[](3);
-        for (uint256 i; i < 3; ++i) hs[i] = keccak256(abi.encode("batch", i));
+        for (uint256 i; i < 3; ++i) {
+            hs[i] = keccak256(abi.encode("batch", i));
+        }
         vm.prank(owner);
         uint256 first = nft.forgeReservedMany(hs);
         assertEq(first, 901);
         assertEq(nft.ownerOf(903), owner);
-        assertEq(nft.tokenOfSoul(hs[2]), 903);
+        assertEq(nft.tokenOfSoul(keccak256(abi.encode(owner, hs[2]))), 903);
         assertEq(nft.reservedForged(), 3);
         // never past the reserve, and all or nothing
         bytes32[] memory big = new bytes32[](98);
-        for (uint256 i; i < 98; ++i) big[i] = keccak256(abi.encode("big", i));
+        for (uint256 i; i < 98; ++i) {
+            big[i] = keccak256(abi.encode("big", i));
+        }
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(GodsOfIMDInhabitants.ReserveExhausted.selector, 100));
         nft.forgeReservedMany(big);
@@ -129,7 +139,9 @@ contract ReserveTest is Test {
 
     function test_fiftyInOneTransactionFitsABlock() public {
         bytes32[] memory hs = new bytes32[](50);
-        for (uint256 i; i < 50; ++i) hs[i] = keccak256(abi.encode("half", i));
+        for (uint256 i; i < 50; ++i) {
+            hs[i] = keccak256(abi.encode("half", i));
+        }
         uint256 g = gasleft();
         vm.prank(owner);
         nft.forgeReservedMany(hs);
@@ -137,7 +149,9 @@ contract ReserveTest is Test {
         emit log_named_uint("gas for 50 reserved souls", used);
         assertLt(used, 15_000_000);
         bytes32[] memory rest = new bytes32[](50);
-        for (uint256 i; i < 50; ++i) rest[i] = keccak256(abi.encode("rest", i));
+        for (uint256 i; i < 50; ++i) {
+            rest[i] = keccak256(abi.encode("rest", i));
+        }
         vm.prank(owner);
         nft.forgeReservedMany(rest);
         assertEq(nft.reservedForged(), 100);

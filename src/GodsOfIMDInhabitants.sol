@@ -28,8 +28,9 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 /// Death in the game never burns the NFT: the steward marks it as a memorial instead.
 ///
 /// The Marks: every soul gets one Mark from a fixed deck (`markCap`: Mortal, Blessed, Ascended, Divine; it sums to
-/// `maxSupply`). Nobody chooses it: `reveal` draws it from the hash of the block after the forge, which nobody knew
-/// when the forge was sent, so a Mark cannot be re-rolled. Every soul draws with the same odds: what is left of the deck.
+/// `maxSupply`). `reveal` draws it from the hash of the block after the forge. If that hash expires, reveal schedules
+/// a new future block instead of drawing from a known recent hash. Timely permissionless reveals are still needed:
+/// block producers and callers controlling reveal order can influence a blockhash-based draw from a shared deck.
 ///
 /// Forging with other tokens: a soul can also be paid in a token the owner lists (`forgeWithToken`, `setForgeToken`):
 /// its price, how many souls it may buy, the share burned, and one payee for the rest after a valid referrer's
@@ -117,6 +118,7 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     uint256 public constant RESERVE = 100;
     /// @notice Reserved souls forged so far (at most `RESERVE`).
     uint256 public reservedForged;
+
     /// @notice A token a soul can be paid in besides IMD. `price` 0 turns it off; `cap` is the most souls it may buy;
     /// `burnBps` of the price is burned (sent to `DEAD`); `payee` gets the rest after a valid referrer's share.
     struct ForgeToken {
@@ -144,6 +146,8 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     mapping(uint256 => uint256) public revealBlock;
 
     mapping(uint256 => bytes32) public soulHashOf;
+    /// @notice Soul lookup by keccak256(abi.encode(originalMinter, soulHash)); copying another minter's hash
+    /// cannot occupy their soul. `soulHashOf` and `SoulForged` keep the original character JSON hash.
     mapping(bytes32 => uint256) public tokenOfSoul;
     mapping(uint256 => bool) public memorial;
     /// @notice Hash of the chronicle recorded when the soul fell (0 while alive).
@@ -174,7 +178,9 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     );
     event Referred(address indexed referrer, uint256 indexed tokenId, uint256 amount);
     event Petitioned(uint256 indexed tokenId, address indexed by, bytes32 indexed petitionHash, uint256 paid);
-    event Commissioned(uint256 indexed tokenId, address indexed by, uint8 kind, bytes32 indexed briefHash, uint256 paid);
+    event Commissioned(
+        uint256 indexed tokenId, address indexed by, uint8 kind, bytes32 indexed briefHash, uint256 paid
+    );
     event Memorialized(uint256 indexed tokenId, bytes32 chronicleHash);
     /// @notice A cosmetic bought in the Bazaar for a soul. `itemId` names the item in the game's catalogue.
     event Purchased(
@@ -197,6 +203,7 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     event PhaseUpdated(Phase phase);
     event AllowlistRootUpdated(bytes32 root);
     event MarkRevealed(uint256 indexed tokenId, Mark mark);
+    event RevealRearmed(uint256 indexed tokenId, uint256 revealBlock);
     event MaxPerWalletUpdated(uint256 maxPerWallet);
     event OracleCostUpdated(uint256 oracleCost);
     /// @notice A soul paid in a forge token (its `SoulForged` shows a price of 0 IMD): what was paid, burned and shared.
@@ -328,7 +335,11 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     /// @notice Forge a soul with a forge token at its price (Public phase only, at most its `cap` souls). Pulls the
     /// token from the caller (approve this contract on it first): `burnBps` burned, a valid referrer's `referralBps`,
     /// the token's payee the rest. The next paid id, the same odds, the same wallet cap as a forge in IMD.
-    function forgeWithToken(address token, bytes32 soulHash, address referrer) external nonReentrant returns (uint256 tokenId) {
+    function forgeWithToken(address token, bytes32 soulHash, address referrer)
+        external
+        nonReentrant
+        returns (uint256 tokenId)
+    {
         ForgeToken storage t = forgeTokens[token];
         if (t.price == 0) revert TokenForgeOff(token);
         Phase p = phase;
@@ -378,11 +389,18 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     }
 
     /// @notice `forgeReserved` for several souls in one transaction, in order.
-    function forgeReservedMany(bytes32[] calldata soulHashes) external onlyOwner nonReentrant returns (uint256 firstId) {
+    function forgeReservedMany(bytes32[] calldata soulHashes)
+        external
+        onlyOwner
+        nonReentrant
+        returns (uint256 firstId)
+    {
         uint256 n = soulHashes.length;
         if (n == 0) revert ZeroAmount();
         firstId = _forgeReserved(soulHashes[0]);
-        for (uint256 i = 1; i < n; ++i) _forgeReserved(soulHashes[i]);
+        for (uint256 i = 1; i < n; ++i) {
+            _forgeReserved(soulHashes[i]);
+        }
     }
 
     /// @notice Petition the God on behalf of a living soul you own. Pays `petitionPrice` IMD:
@@ -422,12 +440,18 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
 
     /// @notice Reveal a forged soul's Mark. Anyone may call it from the second block after the forge (the game
     /// server does it at once). The Mark is drawn from the deck that is left, every slot as likely as any other, using
-    /// the hash of the block after the forge. If that hash is older than 256 blocks, the latest block hash is used.
+    /// the hash of the block after the forge. If that hash expired, this call only schedules a new future block
+    /// and emits `RevealRearmed`; call again after that block. No Mark is drawn from an already known fallback.
     function reveal(uint256 tokenId) public {
         uint256 b = revealBlock[tokenId];
         if (b == 0 || block.number <= b) revert NotRevealable(tokenId);
         bytes32 h = blockhash(b);
-        if (h == bytes32(0)) h = blockhash(block.number - 1);
+        if (h == bytes32(0)) {
+            uint256 next = block.number + 1;
+            revealBlock[tokenId] = next;
+            emit RevealRearmed(tokenId, next);
+            return; // Reverting here would undo the new reveal block.
+        }
         delete revealBlock[tokenId];
         Mark m = _draw(uint256(keccak256(abi.encode(h, soulHashOf[tokenId], tokenId))));
         markOf[tokenId] = m;
@@ -549,7 +573,10 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
 
     /// @notice List a token souls can be paid in, or change one: its price (0 turns it off), the most souls it may
     /// buy, the share burned (in bps, leaving room for a referrer) and who receives the rest. IMD itself is not one.
-    function setForgeToken(address token, uint256 price, uint256 cap, uint16 burnBps_, address payee) external onlyOwner {
+    function setForgeToken(address token, uint256 price, uint256 cap, uint16 burnBps_, address payee)
+        external
+        onlyOwner
+    {
         _setForgeToken(token, price, cap, burnBps_, payee);
     }
 
@@ -676,11 +703,12 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     /// @dev Checks the soul hash, counts the soul and books `tokenId` for it (the callers check their own cap).
     function _registerSoul(bytes32 soulHash, uint256 tokenId) private {
         if (soulHash == bytes32(0)) revert ZeroSoulHash();
-        uint256 existing = tokenOfSoul[soulHash];
+        bytes32 key = keccak256(abi.encode(msg.sender, soulHash));
+        uint256 existing = tokenOfSoul[key];
         if (existing != 0) revert SoulAlreadyForged(soulHash, existing);
         ++totalForged;
         soulHashOf[tokenId] = soulHash;
-        tokenOfSoul[soulHash] = tokenId;
+        tokenOfSoul[key] = tokenId;
         revealBlock[tokenId] = block.number + 1;
     }
 
