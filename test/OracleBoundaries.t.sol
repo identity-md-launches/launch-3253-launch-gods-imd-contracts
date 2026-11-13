@@ -81,7 +81,9 @@ contract OracleBoundariesTest is OracleFixture {
         for (uint256 i; i < 8; ++i) {
             assertFalse(_answered(hashes[i]));
             OracleShrine.Attestation memory a = _attestation(hashes[i]);
-            shrine.record(a, _sign(a));
+            bytes memory groupSig = _sign(a);
+            vm.prank(director);
+            shrine.record(a, groupSig);
             assertTrue(_answered(hashes[i]));
         }
         vm.prank(address(intake));
@@ -129,7 +131,12 @@ contract OracleBoundariesTest is OracleFixture {
         else if (field == 13) ++a.issuedAt;
         else ++a.expiresAt;
         vm.prank(address(intake));
-        vm.expectRevert(OracleShrine.InvalidSignature.selector);
+        if (field == 2) {
+            // The pin check runs first: the other question was pinned by a different request.
+            vm.expectRevert(abi.encodeWithSelector(OracleShrine.AnswerNotForRequest.selector, rid, other));
+        } else {
+            vm.expectRevert(OracleShrine.InvalidSignature.selector);
+        }
         shrine.onOracleResult(rid, a, sig);
         assertTrue(shrine.pending(rid));
         assertFalse(_answered(H));
@@ -149,6 +156,7 @@ contract OracleBoundariesTest is OracleFixture {
         hashes[0] = H;
         vm.prank(director);
         twin.ask(bytes32("oracle.request@oracle-1"), "{}", hashes, 1);
+        vm.startPrank(director);
         vm.expectRevert(OracleShrine.InvalidSignature.selector);
         twin.record(a, sig);
         uint256 originalChain = block.chainid;
@@ -157,6 +165,7 @@ contract OracleBoundariesTest is OracleFixture {
         shrine.record(a, sig);
         vm.chainId(originalChain);
         shrine.record(a, sig);
+        vm.stopPrank();
         assertTrue(_answered(H));
     }
 
@@ -165,10 +174,12 @@ contract OracleBoundariesTest is OracleFixture {
         OracleShrine.Attestation memory a = _attestation(H);
         bytes memory sig = _sign(a);
         vm.warp(uint256(a.expiresAt) + 1);
+        vm.startPrank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.AttestationExpired.selector, a.expiresAt));
         shrine.record(a, sig);
         vm.warp(a.expiresAt);
         shrine.record(a, sig);
+        vm.stopPrank();
         assertTrue(_answered(H));
     }
 
@@ -180,11 +191,13 @@ contract OracleBoundariesTest is OracleFixture {
         SelectiveContractSigner signer = new SelectiveContractSigner(shrine.attestationDigest(a), contractSignature);
         vm.prank(owner);
         shrine.setSigner(address(signer));
+        vm.startPrank(director);
         vm.expectRevert(OracleShrine.InvalidSignature.selector);
         shrine.record(a, oldSignature);
         vm.expectRevert(OracleShrine.InvalidSignature.selector);
         shrine.record(a, hex"aabbcd");
         shrine.record(a, contractSignature);
+        vm.stopPrank();
         assertTrue(_answered(H));
     }
 

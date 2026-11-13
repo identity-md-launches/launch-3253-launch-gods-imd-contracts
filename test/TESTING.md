@@ -26,14 +26,17 @@ Each invariant campaign runs 256 sequences of 96 calls. The NFT campaign uses fi
 
 The property-based tests use bounded inputs, with explicit examples for zero, one wei, maximum batch length, duplicate values, exact deadlines, and the full uint64 week-identifier domain. No added test asserts exact gas consumption or depends on test order.
 
-## Reproduced findings
+## Revision (forge-order reveals, request-bound answers, director-only relays)
 
-The task's `.imd-findings.json` contains the full standalone source and reproduction for:
+The two findings this suite first reported (referral bps vs. listed forge-token burn share; future `issuedAt`) were fixed in the implementation's revision and are no longer reported. The suite was updated to the revised behaviour rather than weakened:
 
-- Medium: changing the global referral bps can invalidate a previously validated alternate-token split, causing otherwise eligible referred mints to panic.
-- Low: oracle verification accepts a future `issuedAt` beyond the supplied canonical verifier's five-minute clock tolerance. This requires a genuine signature from the trusted signer.
+- `RewardsStateMachine.t.sol` settles every rewards week through the intake's 200 000-gas callback for the shrine's own request (`requestOfQuestion`), first without the stipend to surface the revert reason, then through the mock intake.
+- `OracleBoundaries.t.sol` relays as the director; a tampered `questionHash` is now refused earlier with `AnswerNotForRequest`.
+- `invariant/RewardAccounting.t.sol` checks on every relay attempt that an outsider gets `NotDirector` and the director gets `RewardsAnswerNotRelayable`, and that neither records anything.
+- `invariant/InhabitantsAccounting.t.sol` keeps a forge-order model of the reveal queue: an out-of-order reveal must revert `RevealOutOfOrder(id, head)` (or `NotRevealable`) without changing state, and a new invariant checks `nextToReveal()` against the model's head after every call.
+- `RevisionEdges.t.sol` covers orphaned rewards requests after unpin/re-propose, callbacks refused for expiry or quorum staying pending and bound, a failure notice leaving cancellation as the only exit, the `issuedAt` tolerance boundary fuzzed through both entry points, a stale head blocking fresh souls, and the serial drain of a stale batch.
 
-Both proofs were compiled and observed to fail for the stated reason under `test/scratch/`. They are not part of the passing regression suite and are carried in the findings' `proof` fields for review. The supplied implementation has not been changed to resolve them.
+`.imd-findings.json` reports one low liveness finding from the revision: a batch whose reveal hashes all expired drains one soul per re-arm, because only the head can be re-armed.
 
 ## Reproduction
 

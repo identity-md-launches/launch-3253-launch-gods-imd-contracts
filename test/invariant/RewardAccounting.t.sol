@@ -114,15 +114,37 @@ contract RewardAccountingHandler is Test {
         a.expiresAt = uint64(block.timestamp + 1 hours);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(KEY, shrine.attestationDigest(a));
         bytes memory sig = abi.encodePacked(r, s, v);
-        bool ok;
-        if (callback && shrine.pending(w.request)) {
-            ok = intake.deliver(w.request, a, sig);
-            if (!ok) unexpectedRevert = true;
-            else ++successfulCalls;
-        } else {
-            (ok,) = _call(RELAYER, abi.encodeCall(shrine.record, (a, sig)));
+        if (!callback) {
+            // A rewards answer is never relayable: an outsider is not the director, and the director is refused too.
+            _mustRevert(
+                RELAYER,
+                abi.encodeCall(shrine.record, (a, sig)),
+                abi.encodeWithSelector(OracleShrine.NotDirector.selector, RELAYER)
+            );
+            _mustRevert(
+                DIRECTOR,
+                abi.encodeCall(shrine.record, (a, sig)),
+                abi.encodeWithSelector(OracleShrine.RewardsAnswerNotRelayable.selector, w.question)
+            );
+            return;
         }
+        // After an unsigned failure notice the request is no longer pending; the week can only be cancelled.
+        if (!shrine.pending(w.request)) return;
+        bool ok = intake.deliver(w.request, a, sig);
+        if (!ok) unexpectedRevert = true;
+        else ++successfulCalls;
         if (ok) w.verdict = approved ? 1 : 2;
+    }
+
+    function _mustRevert(address actor, bytes memory data, bytes memory expected) private {
+        vm.prank(actor);
+        (bool ok, bytes memory result) = address(shrine).call(data);
+        if (ok || keccak256(result) != keccak256(expected)) {
+            unexpectedRevert = true;
+            lastFailure = result;
+        } else {
+            ++successfulCalls;
+        }
     }
 
     function settle(uint256 seed) external {
@@ -332,8 +354,12 @@ contract RewardAccountingInvariantTest is Test {
         handler.failRequest(1);
         handler.release(1, true);
         handler.propose(1, 50 ether);
-        handler.recordVerdict(1, false, false);
+        handler.recordVerdict(1, false, false); // relays are refused and record nothing
+        assertEq(handler.model(1).verdict, 0);
+        handler.recordVerdict(1, false, true);
+        assertEq(handler.model(1).verdict, 2);
         handler.settle(1);
+        assertEq(uint8(shrine.rewardWeek(1).status), uint8(OracleShrine.RewardStatus.Rejected));
         handler.propose(1, 20 ether);
         handler.elapse(uint32(14 days));
         handler.release(1, false);

@@ -163,13 +163,33 @@ contract InhabitantsAccountingHandler is Test {
         }
     }
 
+    /// The model's reveal head: the earliest-tracked (forge-order) soul without a Mark, 0 if none.
+    function head() public view returns (uint256) {
+        for (uint256 i; i < ids.length; ++i) {
+            if (expectedMark[ids[i]] == 0) return ids[i];
+        }
+        return 0;
+    }
+
     function revealSoul(uint256 seed, uint16 delay) external {
         if (ids.length == 0) return;
-        uint256 id = ids[seed % ids.length];
-        if (expectedMark[id] != 0) return;
+        uint256 chosen = ids[seed % ids.length];
+        uint256 id = head();
+        if (id == 0) return;
         uint256 b = nft.revealBlock(id);
         uint256 next = vm.getBlockNumber() + bound(delay, 2, 300);
         vm.roll(next);
+        if (chosen != id) {
+            // Any soul other than the forge-order head is refused, revealed or not, and changes nothing.
+            uint256 cb = nft.revealBlock(chosen);
+            bytes memory expected = cb == 0 || next <= cb
+                ? abi.encodeWithSelector(GodsOfIMDInhabitants.NotRevealable.selector, chosen)
+                : abi.encodeWithSelector(GodsOfIMDInhabitants.RevealOutOfOrder.selector, chosen, id);
+            vm.prank(address(0xBEEF));
+            (bool okOut, bytes memory res) = address(nft).call(abi.encodeCall(nft.reveal, (chosen)));
+            if (okOut || keccak256(res) != keccak256(expected)) unexpectedRevert = true;
+            if (nft.revealBlock(chosen) != cb) unexpectedRevert = true;
+        }
         if (next - b <= 256) vm.setBlockhash(b, keccak256(abi.encode("fixed historical block", b)));
         (bool ok,) = _call(address(0xBEEF), abi.encodeCall(nft.reveal, (id)));
         if (!ok) return;
@@ -392,6 +412,11 @@ contract InhabitantsAccountingInvariantTest is Test {
     function invariant_validActionsDoNotSilentlyRevert() public view {
         assertFalse(handler.unexpectedRevert(), "valid handler action reverted");
         assertGe(handler.successfulCalls(), 6);
+    }
+
+    /// Reveals follow forge order: the contract's head is the earliest-forged unrevealed soul in the model.
+    function invariant_revealHeadIsTheEarliestForgedUnrevealedSoul() public view {
+        assertEq(nft.nextToReveal(), handler.head());
     }
 
     function test_handlerExercisesTransfersMemorialsServicesAndStaleReveals() public {

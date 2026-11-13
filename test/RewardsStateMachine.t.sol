@@ -27,10 +27,23 @@ contract RewardsStateMachineTest is OracleFixture {
         return shrine.askRewards(week, root, amount, "{}", q);
     }
 
+    /// Rewards and single questions are settled only by the Intake's callback for the shrine's own request.
     function _answer(bytes32 q, bool approved) private {
         OracleShrine.Attestation memory a = _attestation(q);
         a.answer = abi.encode(approved);
-        shrine.record(a, _sign(a));
+        _deliver(a);
+    }
+
+    function _deliver(OracleShrine.Attestation memory a) private {
+        bytes32 rid = shrine.requestOfQuestion(a.questionHash);
+        assertTrue(rid != bytes32(0), "question pinned by a request");
+        bytes memory sig = _sign(a);
+        // Run once without the stipend to surface the revert reason, then through the intake's 200k callback.
+        uint256 snap = vm.snapshotState();
+        vm.prank(address(intake));
+        shrine.onOracleResult(rid, a, sig);
+        vm.revertToState(snap);
+        assertTrue(intake.deliver(rid, a, sig), "callback fits the 200k stipend");
     }
 
     function _status(uint64 week, OracleShrine.RewardStatus expected, uint256 remaining) private view {
@@ -210,7 +223,7 @@ contract RewardsStateMachineTest is OracleFixture {
         if (encoding == 3) a.answer = hex"01";
         if (encoding == 4) a.answer = abi.encode(true, true);
         if (encoding == 5) a.answerType = 3;
-        shrine.record(a, _sign(a));
+        _deliver(a);
         if (encoding == 6) {
             vm.expectRevert(abi.encodeWithSelector(OracleShrine.RewardsApproved.selector, uint64(1)));
             shrine.rejectRewards(1);
