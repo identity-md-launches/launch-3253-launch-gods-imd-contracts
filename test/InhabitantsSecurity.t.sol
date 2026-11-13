@@ -103,8 +103,15 @@ contract InhabitantsSecurityTest is Test {
         nft.revealMany(ids);
         assertEq(nft.revealBlock(stale), block.number + 1);
         assertEq(uint8(nft.markOf(stale)), 0);
-        assertGt(uint8(nft.markOf(fresh)), 0);
+        // Reveals follow forge order: `fresh` waits behind the re-armed `stale`.
+        assertEq(uint8(nft.markOf(fresh)), 0);
         assertEq(uint8(nft.markOf(waiting)), 0);
+        vm.roll(block.number + 2);
+        nft.revealMany(ids);
+        assertGt(uint8(nft.markOf(stale)), 0);
+        assertGt(uint8(nft.markOf(fresh)), 0);
+        assertGt(uint8(nft.markOf(waiting)), 0);
+        assertEq(nft.nextToReveal(), 0);
     }
 
     function testFuzz_staleRevealNeverDrawsFromKnownFallback(uint256 delay, bytes32 previousHash) public {

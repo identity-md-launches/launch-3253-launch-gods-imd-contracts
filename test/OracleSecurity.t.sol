@@ -14,19 +14,22 @@ contract OracleSecurityTest is OracleFixture {
         assertEq(shrine.minAgreed(), 20);
     }
 
-    /// Regression for dd2b89d5ff3a: a separate three-seat oracle request cannot settle this week's pin.
+    /// Regression for dd2b89d5ff3a: a three-seat answer cannot settle this week's pin, by callback or relay.
     function test_threeSeatRelayCannotActivateOrRejectRewards() public {
-        _askRewards(1, H, 100 ether);
+        bytes32 rid = _askRewards(1, H, 100 ether);
         OracleShrine.Attestation memory a = _attestation(H);
         a.panelSize = 3;
         a.quorum = 3;
         a.agreed = 3;
         bytes memory sig = _sign(a);
-        vm.expectRevert(abi.encodeWithSelector(OracleShrine.QuorumTooLow.selector, uint16(3), uint16(20)));
+        assertFalse(intake.deliver(rid, a, sig));
+        vm.prank(director);
+        vm.expectRevert(abi.encodeWithSelector(OracleShrine.RewardsAnswerNotRelayable.selector, H));
         shrine.record(a, sig);
         a.answer = abi.encode(false);
         sig = _sign(a);
-        vm.expectRevert(abi.encodeWithSelector(OracleShrine.QuorumTooLow.selector, uint16(3), uint16(20)));
+        assertFalse(intake.deliver(rid, a, sig));
+        vm.expectRevert(abi.encodeWithSelector(OracleShrine.NotDirector.selector, address(this)));
         shrine.record(a, sig);
         assertFalse(_answered(H));
         assertEq(shrine.reserved(), 100 ether);
@@ -41,6 +44,7 @@ contract OracleSecurityTest is OracleFixture {
         OracleShrine.Attestation memory a = _attestation(H);
         a.panelSize = 20;
         bytes memory sig = _sign(a);
+        vm.prank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.PanelTooWeak.selector, uint16(20), uint16(20)));
         shrine.record(a, sig);
     }
@@ -53,6 +57,7 @@ contract OracleSecurityTest is OracleFixture {
         a.quorum = 3;
         a.agreed = 3;
         bytes memory sig = _sign(a);
+        vm.prank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.PanelTooWeak.selector, uint16(30), uint16(3)));
         shrine.record(a, sig);
     }
@@ -87,7 +92,9 @@ contract OracleSecurityTest is OracleFixture {
         a.panelSize = 50;
         a.quorum = 35;
         a.agreed = 40;
-        shrine.record(a, _sign(a));
+        bytes memory sig = _sign(a);
+        vm.prank(director);
+        shrine.record(a, sig);
         assertTrue(_answered(H));
     }
 
@@ -123,6 +130,7 @@ contract OracleSecurityTest is OracleFixture {
         a.agreed = agreed;
         bytes memory sig = _sign(a);
         bool acceptable = panel >= 30 && quorum >= 20 && agreed >= quorum && agreed >= 20 && agreed <= panel;
+        vm.prank(director);
         (bool ok,) = address(shrine).call(abi.encodeCall(shrine.record, (a, sig)));
         assertEq(ok, acceptable);
         assertEq(_answered(H), acceptable);
@@ -182,6 +190,7 @@ contract OracleSecurityTest is OracleFixture {
         shrine.onOracleResult(bytes32(0), a, sig);
         assertTrue(intake.deliver(rid, a, sig));
         assertFalse(intake.deliver(rid, a, sig));
+        vm.prank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.AlreadyAnswered.selector, H));
         shrine.record(a, sig);
     }
@@ -189,14 +198,17 @@ contract OracleSecurityTest is OracleFixture {
     function test_unpinnedExpiredAndTamperedAnswersCannotSettle() public {
         OracleShrine.Attestation memory a = _attestation(H);
         bytes memory sig = _sign(a);
+        vm.prank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.NotPinned.selector, H));
         shrine.record(a, sig);
         _ask(H);
         a.answer = abi.encode(false);
+        vm.prank(director);
         vm.expectRevert(OracleShrine.InvalidSignature.selector);
         shrine.record(a, sig);
         a.expiresAt = uint64(block.timestamp - 1);
         sig = _sign(a);
+        vm.prank(director);
         vm.expectRevert(abi.encodeWithSelector(OracleShrine.AttestationExpired.selector, a.expiresAt));
         shrine.record(a, sig);
         assertFalse(_answered(H));
@@ -233,7 +245,7 @@ contract OracleSecurityTest is OracleFixture {
 }
 
 contract OracleCallbackGasTest is OracleFixture {
-    /// e128f904206e: measure a cold delivery; large list answers use the existing permissionless relay.
+    /// e128f904206e: measure a cold delivery; large list answers use the director's relay.
     function testFuzz_listDeliveryAndRecordRecovery(uint8 length, bool addressList) public {
         length = uint8(bound(length, 1, 8));
         bytes32 hash = keccak256(abi.encode(length, addressList));
@@ -253,6 +265,7 @@ contract OracleCallbackGasTest is OracleFixture {
         if (!delivered) {
             assertTrue(shrine.pending(rid));
             assertFalse(_answered(hash));
+            vm.prank(director);
             shrine.record(a, sig);
         }
         assertTrue(_answered(hash));

@@ -116,6 +116,8 @@ contract OracleShrine is Ownable, EIP712 {
     /// @notice After this long from activation, the owner may expire a week and release what was not claimed.
     uint256 public constant REWARD_CLAIM_WINDOW = 56 days;
     uint256 private constant BPS = 10_000;
+    /// @notice How far in the future an attestation's `issuedAt` may be (the protocol verifier's tolerance).
+    uint256 public constant ISSUED_AT_TOLERANCE = 5 minutes;
 
     uint8 private constant VERDICT_NONE = 0;
     uint8 private constant VERDICT_TRUE = 1;
@@ -153,6 +155,9 @@ contract OracleShrine is Ownable, EIP712 {
     mapping(uint64 => mapping(address => bool)) private _claimed;
     /// @dev Week whose proposal pinned this question (only meaningful for kind `KIND_REWARDS`).
     mapping(bytes32 => uint64) private _rewardWeekOfQuestion;
+    /// @notice The intake request that asked each pinned question. `onOracleResult` accepts an answer only from
+    /// the request that pinned its question.
+    mapping(bytes32 => bytes32) public requestOfQuestion;
 
     // ----------------------------------------------------------------- events
 
@@ -206,6 +211,9 @@ contract OracleShrine is Ownable, EIP712 {
     error QuorumTooLow(uint16 quorum, uint16 minQuorum);
     error AttestationExpired(uint64 expiresAt);
     error InvalidSignature();
+    error AttestationNotYetValid(uint64 issuedAt);
+    error AnswerNotForRequest(bytes32 requestId, bytes32 questionHash);
+    error RewardsAnswerNotRelayable(bytes32 questionHash);
     error AnchorExists(uint64 day);
     error InvalidMinQuorum();
     error InvalidPanelMinimums();
@@ -276,6 +284,9 @@ contract OracleShrine is Ownable, EIP712 {
         }
         uint256 paid;
         (requestId, paid) = _buy(action, body, n);
+        for (uint256 i; i < n; ++i) {
+            requestOfQuestion[questionHashes[i]] = requestId;
+        }
         emit Asked(requestId, action, kind, questionHashes, paid);
     }
 
@@ -316,6 +327,7 @@ contract OracleShrine is Ownable, EIP712 {
         uint256 paid;
         bytes32 action = rewardsAction;
         (requestId, paid) = _buy(action, body, 1); // the question is paid from what is left free
+        requestOfQuestion[questionHash] = requestId;
         bytes32[] memory hashes = new bytes32[](1);
         hashes[0] = questionHash;
         emit Asked(requestId, action, KIND_REWARDS, hashes, paid);
@@ -340,6 +352,7 @@ contract OracleShrine is Ownable, EIP712 {
                 }
             }
             delete pins[h];
+            delete requestOfQuestion[h];
             emit Unpinned(h);
         }
     }
@@ -356,12 +369,17 @@ contract OracleShrine is Ownable, EIP712 {
     /// @notice Single-question answer (selector 0x510379c7). Called by the intake with a 200k gas limit.
     /// @dev The answer bytes are stored (~22k gas per 32-byte word), so only short answers fit the limit:
     /// bool/address/bytes32/uint256 easily. Use `record` for lists longer than two elements. If the callback runs out
-    /// of gas the intake swallows the revert, the request stays pending, and the attestation can still be
-    /// relayed by anyone through `record`.
+    /// of gas the intake swallows the revert, the request stays pending, and the director can still relay the
+    /// attestation through `record` (except for a rewards question, which only this callback can settle).
+    /// The answer must be to the question this request pinned: an answer to the same question bought by someone
+    /// else never reaches this callback with this shrine's request id.
     function onOracleResult(bytes32 requestId, Attestation calldata a, bytes calldata signature)
         external
         onlyIntakeCallback(requestId)
     {
+        if (requestOfQuestion[a.questionHash] != requestId) {
+            revert AnswerNotForRequest(requestId, a.questionHash);
+        }
         _record(a, signature);
     }
 
@@ -390,9 +408,13 @@ contract OracleShrine is Ownable, EIP712 {
 
     // ------------------------------------------------------------------ relay
 
-    /// @notice Anyone may relay a signed attestation for a question this shrine paid for
-    /// (e.g. the individual answers of an oracle.group).
-    function record(Attestation calldata a, bytes calldata signature) external {
+    /// @notice The director relays a signed attestation for a question this shrine paid for
+    /// (e.g. the individual answers of an oracle.group, or a long list whose callback ran out of gas).
+    /// A signature only proves the oracle answered this question for this shrine, not that the shrine's request was
+    /// the one answered (anyone may buy the same question and name this shrine), so relays are the director's only,
+    /// and a rewards question is settled only by `onOracleResult` for the shrine's own request.
+    function record(Attestation calldata a, bytes calldata signature) external onlyDirector {
+        if (pins[a.questionHash].kind == KIND_REWARDS) revert RewardsAnswerNotRelayable(a.questionHash);
         _record(a, signature);
     }
 
@@ -639,6 +661,7 @@ contract OracleShrine is Ownable, EIP712 {
             revert PanelTooWeak(a.panelSize, a.agreed);
         }
         if (block.timestamp > a.expiresAt) revert AttestationExpired(a.expiresAt);
+        if (a.issuedAt > block.timestamp + ISSUED_AT_TOLERANCE) revert AttestationNotYetValid(a.issuedAt);
         if (!SignatureChecker.isValidSignatureNowCalldata(oracleSigner, _hashTypedDataV4(_hash(a)), signature)) {
             revert InvalidSignature();
         }

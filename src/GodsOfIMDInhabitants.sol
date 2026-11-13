@@ -29,8 +29,9 @@ import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProo
 ///
 /// The Marks: every soul gets one Mark from a fixed deck (`markCap`: Mortal, Blessed, Ascended, Divine; it sums to
 /// `maxSupply`). `reveal` draws it from the hash of the block after the forge. If that hash expires, reveal schedules
-/// a new future block instead of drawing from a known recent hash. Timely permissionless reveals are still needed:
-/// block producers and callers controlling reveal order can influence a blockhash-based draw from a shared deck.
+/// a new future block instead of drawing from a known recent hash. Souls are revealed strictly in the order they were
+/// forged (`nextToReveal`), so no caller can choose an order that steers the shared deck. Timely permissionless
+/// reveals are still needed: block producers can still influence a blockhash-based draw.
 ///
 /// Forging with other tokens: a soul can also be paid in a token the owner lists (`forgeWithToken`, `setForgeToken`):
 /// its price, how many souls it may buy, the share burned, and one payee for the rest after a valid referrer's
@@ -144,6 +145,8 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     mapping(uint256 => Mark) public markOf;
     /// @notice The block whose hash draws the soul's Mark; 0 once revealed.
     mapping(uint256 => uint256) public revealBlock;
+    /// @dev Token id forged at each position (1-based, in forge order). Reveals consume it in that order.
+    mapping(uint256 => uint256) private _revealOrder;
 
     mapping(uint256 => bytes32) public soulHashOf;
     /// @notice Soul lookup by keccak256(abi.encode(originalMinter, soulHash)); copying another minter's hash
@@ -231,6 +234,7 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     error SoulAlreadyForged(bytes32 soulHash, uint256 tokenId);
     error MaxSupplyReached(uint256 maxSupply);
     error NotRevealable(uint256 tokenId);
+    error RevealOutOfOrder(uint256 tokenId, uint256 nextToReveal);
     error WalletLimitReached(address account, uint256 maxPerWallet);
     error InvalidProof();
     error AllowlistCapReached(address account, uint256 maxMints);
@@ -442,9 +446,13 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     /// server does it at once). The Mark is drawn from the deck that is left, every slot as likely as any other, using
     /// the hash of the block after the forge. If that hash expired, this call only schedules a new future block
     /// and emits `RevealRearmed`; call again after that block. No Mark is drawn from an already known fallback.
+    /// Souls are revealed in forge order: only `nextToReveal()` can be revealed, so the order of draws from the
+    /// shared deck is fixed when the souls are forged and no revealer can pick which soul draws first.
     function reveal(uint256 tokenId) public {
         uint256 b = revealBlock[tokenId];
         if (b == 0 || block.number <= b) revert NotRevealable(tokenId);
+        uint256 next = nextToReveal();
+        if (tokenId != next) revert RevealOutOfOrder(tokenId, next);
         bytes32 h = blockhash(b);
         if (h == bytes32(0)) {
             uint256 next = block.number + 1;
@@ -462,12 +470,23 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
         emit MetadataUpdate(tokenId);
     }
 
-    /// @notice `reveal` for every listed soul that can be revealed now; the others are skipped.
+    /// @notice `reveal` for every listed soul that can be revealed now, in list order; the others are skipped,
+    /// including a soul that is not `nextToReveal()` when its turn in the list comes (list souls in forge order).
     function revealMany(uint256[] calldata tokenIds) external {
         for (uint256 i; i < tokenIds.length; ++i) {
-            uint256 b = revealBlock[tokenIds[i]];
-            if (b != 0 && block.number > b) reveal(tokenIds[i]);
+            uint256 id = tokenIds[i];
+            uint256 b = revealBlock[id];
+            if (b != 0 && block.number > b && id == nextToReveal()) reveal(id);
         }
+    }
+
+    /// @notice The only soul `reveal` accepts now: the earliest-forged soul still unrevealed (0 if none).
+    function nextToReveal() public view returns (uint256) {
+        uint256 revealed;
+        for (uint256 i; i < 4; ++i) {
+            revealed += markRevealed[i];
+        }
+        return revealed < totalForged ? _revealOrder[revealed + 1] : 0;
     }
 
     // --------------------------------------------------------------- steward
@@ -536,6 +555,7 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
     function setReferralBps(uint16 referralBps_) external onlyOwner {
         uint256 pool = payeePoolBps();
         if (referralBps_ > pool) revert InvalidReferralBps(referralBps_, pool);
+        _checkForgeTokenSplits(referralBps_);
         referralBps = referralBps_;
         emit ReferralBpsUpdated(referralBps_);
     }
@@ -658,6 +678,14 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
         emit ForgeTokenUpdated(token, price, cap, burnBps_, payee);
     }
 
+    /// @dev Every listed forge token must still fit its burn share plus `referralBps_` in its price.
+    function _checkForgeTokenSplits(uint256 referralBps_) private view {
+        for (uint256 i; i < _forgeTokenList.length; ++i) {
+            uint16 b = forgeTokens[_forgeTokenList[i]].burnBps;
+            if (uint256(b) + referralBps_ > BPS) revert InvalidSplit(b, referralBps_);
+        }
+    }
+
     /// @dev Paid souls (IMD or a forge token) take ids 1 .. maxSupply - RESERVE in order; the reserve has the ids after.
     function _nextPaidId() private view returns (uint256) {
         uint256 cap = maxSupply - RESERVE;
@@ -706,7 +734,8 @@ contract GodsOfIMDInhabitants is IERC4906, ERC721, ERC2981, Ownable, ReentrancyG
         bytes32 key = keccak256(abi.encode(msg.sender, soulHash));
         uint256 existing = tokenOfSoul[key];
         if (existing != 0) revert SoulAlreadyForged(soulHash, existing);
-        ++totalForged;
+        uint256 position = ++totalForged;
+        _revealOrder[position] = tokenId;
         soulHashOf[tokenId] = soulHash;
         tokenOfSoul[key] = tokenId;
         revealBlock[tokenId] = block.number + 1;
